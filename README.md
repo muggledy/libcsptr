@@ -1,4 +1,4 @@
-C Smart Pointers
+single-file C Smart Pointers
 ================
 
 [![Build Status](https://travis-ci.org/Snaipe/libcsptr.svg?branch=master)](https://travis-ci.org/Snaipe/libcsptr) 
