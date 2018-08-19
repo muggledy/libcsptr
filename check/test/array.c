@@ -1,5 +1,5 @@
 #include <check.h>
-#include "csptr/array.h"
+#include "csptr_smart_ptr.h"
 #include "utils.h"
 
 #define ARRAY_SIZE 25

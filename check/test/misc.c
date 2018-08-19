@@ -1,6 +1,5 @@
 #include <check.h>
-#include "csptr/smart_ptr.h"
-#include "csptr/config.h"
+#include "csptr_smart_ptr.h"
 #include "utils.h"
 
 START_TEST (test_zero_size) {
