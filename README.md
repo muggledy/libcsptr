@@ -16,33 +16,13 @@ to the (GNU) C programming language.
 * `unique_ptr`, `shared_ptr` macros, and `smart` type attribute
 * Destructor support for cleanup
 * Custom variable metadata on allocation
-* Cross-platform: tested under linux 3.18.6-1, Mac OS X Yosemite 10.10, and Windows 7 (with MinGW and the Cygwin port of GCC)
-
-## Installing
-
-### With a package manager
-
-* Mac OS X: `brew install snaipe/soft/libcsptr`
-* [AUR](https://aur.archlinux.org/packages/libcsptr-git/): `yaourt -S libcsptr`
-* Ubuntu:
-
-    ```bash
-    $ sudo add-apt-repository ppa:snaipewastaken/ppa
-    $ sudo apt-get update
-    $ sudo apt-get install libcsptr-dev
-    ```
+* Cross-platform: tested under linux 3.18.6-1, Mac OS X Yosemite 10.10, and Windows 7 (use llvm in Visual Studio)
+ 
 
 ### Building from source
 #### Prerequisites
 
 To compile the library, GCC 4.6+ is needed.
-
-#### Installation
-
-1. Clone this repository
-2. run `mkdir build && cd $_ && cmake -DCMAKE_INSTALL_PREFIX=$HOME .. && make && make install`  
-   from the project root for a local install, or run  
-   `mkdir build && cd $_ && cmake -DCMAKE_INSTALL_PREFIX=/usr .. && make && sudo make install` for a global install.
 
 ## Examples
 
@@ -50,7 +30,7 @@ To compile the library, GCC 4.6+ is needed.
     simple1.c:
     ```c
     #include <stdio.h>
-    #include <csptr/smart_ptr.h>
+    #include <csptr_smart_ptr.h>
 
     int main(void) {
         // some_int is an unique_ptr to an int with a value of 1.
@@ -86,7 +66,7 @@ To compile the library, GCC 4.6+ is needed.
     ```c
     #include <unistd.h>
     #include <fcntl.h>
-    #include <csptr/smart_ptr.h>
+    #include <csptr_smart_ptr.h>
 
     struct log_file {
         int fd;
@@ -113,8 +93,7 @@ To compile the library, GCC 4.6+ is needed.
 * Allocating a smart array and printing its contents before destruction:
     ```c
     #include <stdio.h>
-    #include <csptr/smart_ptr.h>
-    #include <csptr/array.h>
+    #include <csptr_smart_ptr.h>
 
     void print_int(void *ptr, void *meta) {
         (void) meta;
@@ -143,7 +122,7 @@ To compile the library, GCC 4.6+ is needed.
 
 * Using a different memory allocator (although most will replace malloc/free):
     ```c
-    #include <csptr/smart_ptr.h>
+    #include <csptr_smart_ptr.h>
 
     void *some_allocator(size_t);
     void some_deallocator(void *);
@@ -159,7 +138,7 @@ To compile the library, GCC 4.6+ is needed.
     ```c
     #include <unistd.h>
     #include <fcntl.h>
-    #include <csptr/smart_ptr.h>
+    #include <csptr_smart_ptr.h>
 
     struct log_file {
         int fd;
@@ -193,7 +172,7 @@ To compile the library, GCC 4.6+ is needed.
     ```
 * Using named parameters:
     ```c
-    #include <csptr/smart_ptr.h>
+    #include <csptr_smart_ptr.h>
 
     void nothing(void *ptr, void *meta) {}
 
