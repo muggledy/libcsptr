@@ -1,56 +1,33 @@
 #include <stdio.h>
 #include "csptr_smart_ptr.h"
 
-struct BufferBody {
-    char *buffer;
-    size_t size;
-};
+typedef struct {
+        int *a;
+        int b;
+} xxx_t;
 
-static void callback_dtor(void *ptr, void *meta) {
-    (void) meta;
-    struct BufferBody *ctx = ptr;
-    if (ctx->buffer != NULL)
-        free(ctx->buffer);
-}
-
-struct BufferBody *write_buffer(const char *bufbody, size_t init_body_len) {
-    smart struct BufferBody *ctx = shared_ptr(struct BufferBody, { 0 }, callback_dtor);
-    if (!ctx) // failure to allocate
-        return NULL; // nothing happens, destructor is not called
-
-    if (ctx->buffer == NULL) {
-        ctx->buffer = malloc(init_body_len);
-        if (ctx->buffer != NULL)
-            ctx->size = init_body_len;
-    } else {
-        if (ctx->size < init_body_len) {
-            ctx->buffer = realloc(ctx->buffer, init_body_len);
-            if (ctx->buffer != NULL)
-                ctx->size = init_body_len;
+void dtor_xxx(void *param, void *meta){
+        xxx_t *x = (xxx_t*)param;
+        if (x->a) {
+                smart_free(&(x->a));
         }
-    }
-    size_t buflen = strlen(bufbody);
-    if (ctx->size > buflen)
-        memcpy(ctx->buffer, bufbody, buflen);
-    return sref(ctx); // a new reference on bufCtx is returned, it does not get destoyed
-}
-
-void do_something(size_t init_body_len) {
-    smart struct BufferBody *ctx = write_buffer("hello smart ptr.", init_body_len);
-    printf("%s \n", ctx->buffer);
-    // ctx is destroyed here
 }
 
 int main(void) {
-    printf("Smart pointers for the (GNU) C\n");
-    printf("blog: http://cpuimage.cnblogs.com/\n");
-    printf("tips: u can use llvm to compile in visual studio");
-    printf("download llvm: http://releases.llvm.org/download.html");
-    // some_int is an unique_ptr to an int with a value of 1.
-    smart int *some_int = unique_ptr(int, 1);
-    printf("%p = %d\n", some_int, *some_int);
-    size_t init_body_len = 4096;
-    do_something(init_body_len);
-    // some_int is destroyed here
+        smart int *one_int = shared_ptr(int, 666);
+        int *second_int = one_int;
+        print_smart_ptr_layout(one_int);
+        printf("%p = %d\n", one_int, *one_int);
+        smart xxx_t* x = shared_ptr(xxx_t, {sref(one_int), 2}, dtor_xxx);
+        print_smart_ptr_layout(x);
+        print_smart_ptr_layout(one_int);
+        *one_int = 888;
+        printf("%p = %d\n", one_int, *one_int);
+        /*test: gcc -g demo.c csptr_smart_ptr.c -rdynamic*/
+        //smart_free(&one_int); //call smart_free() to free one unique/shared obj manually. free memory failed herein for ref count > 0
+        //smart_free(&one_int); //one_int is NULL, do nothing
+        //smart_free(&second_int); //ref decrease to 0, the shared obj one_int's memory can be freed normally, but x->a still points to one_int's memory, smart_free x->a in dtor_xxx means double free! but we can detect it by our `smartptr`, won't cause crash problem
+        /*end test*/
+        printf("exit\n");
     return 0;
 }
