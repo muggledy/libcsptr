@@ -76,8 +76,8 @@ typedef void (*f_destructor)(void *, void *);
 
 typedef struct {
     void *(*alloc)(size_t);
-
     void (*dealloc)(void *);
+    void *(*realloc)(void *, size_t);
 } s_allocator;
 
 extern s_allocator smalloc_allocator;
@@ -104,11 +104,12 @@ typedef struct {
 #  define smove(Ptr) \
     smove_size((Ptr), sizeof (*(Ptr)))
 #  define smove2(Secondary_Ptr) smove_v2((Secondary_Ptr))
+#  define smove3(Secondary_Ptr) smove_v3((Secondary_Ptr))
 
 # define ARGS_ args.dtor, { args.meta.ptr, args.meta.size }
 
 /*所谓smart智能，其实就是“autofree”，切记：__attribute__((cleanup(func)))​ 仅适用于局部变量，且它触发的清理函数func会在该局部变量的生命周期结束时被调用*/
-# define smart __attribute__ ((cleanup(sfree_stack)))
+# define smart __attribute__ ((cleanup(smart_free)))
 # define smart_ptr(Kind, Type, ...)                                         \
     ({                                                                      \
         struct s_tmp {                                                      \
@@ -200,8 +201,10 @@ typedef struct {
 #define IS_HEAP_SHARED(meta) ((meta)->kind & SHARED)
 #define IS_HEAP_ARRAY_TYPE(meta) ((meta)->kind & ARRAY)
 #define IS_HEAP_HAS_USERMETA(meta) ((meta)->kind & USERMETA)
-#define IS_HEAP_FREED(meta) ((meta)->kind & ISFREED)
 #define IS_HEAP_VALID(meta) ((meta)->magic == MAGIC_NUM)
+#define IS_HEAP_FREED(meta) ((meta)->kind & ISFREED)
+#define UNSET_HEAP_FREED(meta) (meta)->kind = (meta)->kind & ~ISFREED
+#define SET_HEAP_FREED(meta) (meta)->kind = (meta)->kind | ISFREED
 #define GET_USER_DATA_ALIGNED_SIZE(meta) ((meta)->user_data_size) //对齐后的用户数据总大小
 #define GET_USER_DATA_ELEM_SIZE(meta) ((meta)->user_data_one_elem_size) //用户数据单个元素大小，不区别单元素数组或非数组的单元素，即不管是否是数组，都可以使用该宏，GET_USER_DATA_ELEM_SIZE(meta)*GET_USER_DATA_ELEM_NUM(meta)总是未对齐前的用户数据大小
 #define GET_USER_DATA_ELEM_NUM(meta) ((meta)->user_data_elem_num) //用户数据元素个数，不区别单元素数组或非数组的单元素
@@ -246,7 +249,7 @@ typedef struct {
     size_t user_data_elem_num;
     size_t user_data_one_elem_size;
     /*only for shared*/
-    volatile size_t ref_count; //引用计数，当对SHARED对象的引用计数>1时，调用sfree_stack(SHARED对象)是不会真的释放堆内存的，仅仅是引用计数-1
+    volatile size_t ref_count; //引用计数，当对SHARED对象的引用计数>1时，调用smart_free(SHARED对象)是不会真的释放堆内存的，仅仅是引用计数-1
 } s_meta_shared; /*s_meta_shared也可以用s_meta结构进行解析，因为一开始并不知道一个元数据是UNIQUE类型还是SHARED类型，
 总是按s_meta解析，再根据s_meta->kind来判断类型，如果是SHARED类型，则再将s_meta*强转为s_meta_shared*即可*/
 
@@ -274,8 +277,6 @@ ptr1 = unique_ptr()，之后如果想用另一个指针指向它，应该当采�
 并复制了ptr1所指原始用户数据，ptr1指向的原始用户数据将在ptr1消亡后自动触发autofree动作释放掉
 */
 
-#define smart_free sfree_stack
-
 extern CSPTR_INLINE size_t align(size_t s);
 extern CSPTR_PURE CSPTR_INLINE s_meta *get_meta(void *ptr);
 extern CSPTR_PURE int array_length(void *ptr);
@@ -285,15 +286,19 @@ extern void *sref(void *ptr);
 extern void *smove_size(void *ptr, size_t size);
 extern CSPTR_MALLOC_API void *smalloc(s_smalloc_args *args);
 extern void sfree(void *ptr);
-extern CSPTR_INLINE void sfree_stack(void *ptr);
+extern CSPTR_INLINE void smart_free(void *ptr);
 extern CSPTR_PURE CSPTR_INLINE bool is_valid_heap_ptr(void *ptr);
 extern CSPTR_PURE CSPTR_INLINE size_t get_head_meta_size(void *ptr);
 extern CSPTR_PURE CSPTR_INLINE size_t get_total_aligned_meta_size(void *ptr);
 extern void print_smart_ptr_layout(void *ptr);
 extern void *smove_v2(void *ptr);
+extern void *smove_v3(void *ptr);
 extern CSPTR_PURE CSPTR_INLINE void store_user_data_ptr(s_meta *meta, void *ptr);
 extern CSPTR_PURE CSPTR_INLINE void* retrieve_user_data_ptr(s_meta *meta);
+extern void *smart_realloc(void *ptr, size_t new_user_data_size);
+#ifndef NDEBUG
 extern void print_stacktrace();
+#endif
 
 #undef smalloc
 

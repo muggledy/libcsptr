@@ -1,5 +1,6 @@
 #include "csptr_smart_ptr.h"
 
+#ifndef NDEBUG
 //start print_stacktrace
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,19 +18,20 @@ void print_stacktrace() {
     // 打印栈信息
     char **symbols = backtrace_symbols(buffer, size);
     if (symbols) {
-        for (i = 0; i < size; i++) {
+        for (i = /*0*/1; i < size; i++) {
             printf("%s\n", symbols[i]);
         }
         free(symbols);
     }
 }
 //end print_stacktrace
+#endif
 
-s_allocator smalloc_allocator = {malloc, free};
+s_allocator smalloc_allocator = {malloc, free, realloc};
 
 #ifdef CSPTR_SMART_PTR_MALLOC_FREE_COUNT_DBG
 volatile size_t csptr_smart_ptr_malloc_count = 0; //通过unique_ptr/shared_ptr/unique_arr/shared_arr接口申请的堆内存统计
-volatile size_t csptr_smart_ptr_free_count = 0;   //通过sfree_stack接口释放的堆内存统计
+volatile size_t csptr_smart_ptr_free_count = 0;   //通过smart_free接口释放的堆内存统计
 
 __attribute__((destructor(0))) 
 void csptr_smart_malloc_free_count_judge(void) { //main主函数结束后确认申请的堆内存是否全部被释放，用于检查是否有内存泄漏
@@ -45,27 +47,27 @@ void csptr_smart_malloc_free_count_judge(void) { //main主函数结束后确认�
 }
 #endif
 
-/*注意，为了避免引起悬挂指针（野指针）问题，autofree机制传入sfree_stack的是 <指向所申请内存块的指针> 的指针，也就是一个二级指针，
+/*注意，为了避免引起悬挂指针（野指针）问题，autofree机制传入smart_free的是 <指向所申请内存块的指针> 的指针，也就是一个二级指针，
 譬如我们在函数中定义了一个智能指针/局部变量：
 smart int *one_int = shared_ptr(int, 666);
-在one_int指针离开作用域消亡也就是函数退出时，将自动触发sfree_stack(&one_int)语句的执行，当然我们完全可以在该触发之前手动调用一下
-sfree_stack(&one_int)，没有任何问题，不会引起double free问题！要知道这个one_int就是函数栈帧中的一个内存单元，这个内存单元中存储的
-就是我们所申请的堆内存的地址，现在我们获取了这个内存单元的栈地址传递给sfree_stack()，在sfree_stack()中通过*conv.real_ptr=NULL将该
+在one_int指针离开作用域消亡也就是函数退出时，将自动触发smart_free(&one_int)语句的执行，当然我们完全可以在该触发之前手动调用一下
+smart_free(&one_int)，没有任何问题，不会引起double free问题！要知道这个one_int就是函数栈帧中的一个内存单元，这个内存单元中存储的
+就是我们所申请的堆内存的地址，现在我们获取了这个内存单元的栈地址传递给smart_free()，在smart_free()中通过*conv.real_ptr=NULL将该
 内存单元中的值置为了NULL，如果不置为NULL，那么就会出现一个(野)指针指向已释放内存块的情况！如果访问这个野指针程序逻辑就会出错，如果
-尝试free这个野指针，就会引起double free问题，这就是为啥要为sfree_stack传入一个二级指针的根本原因；
+尝试free这个野指针，就会引起double free问题，这就是为啥要为smart_free传入一个二级指针的根本原因；
 既然如此，就可以完全避免double free了么，不然！看如下代码：
 smart int *one_int = shared_ptr(int, 666);
 int *another_int = one_int;
-sfree_stack(&one_int); //这样就已经释放掉内存地址=*(&one_int)处的堆内存了（假设这个内存地址为0x0000ae3df617）
-sfree_stack(&one_int); //这里*(&one_int)将返回NULL，表示没有任何堆内存需要释放，自然不会引起任何问题
-sfree_stack(&another_int); //*(&another_int)将返回0x0000ae3df617，于是再次尝试释放0x0000ae3df617处的堆内存，double free！crash！
+smart_free(&one_int); //这样就已经释放掉内存地址=*(&one_int)处的堆内存了（假设这个内存地址为0x0000ae3df617）
+smart_free(&one_int); //这里*(&one_int)将返回NULL，表示没有任何堆内存需要释放，自然不会引起任何问题
+smart_free(&another_int); //*(&another_int)将返回0x0000ae3df617，于是再次尝试释放0x0000ae3df617处的堆内存，double free！crash！
 理论上，我们必须使用：int *another_int = sref(one_int) 来增加引用，但万一用户疏忽了呢？
 为此，我们在UNIQUE/SHARED元数据中增加is_freed字段，用于标识对应的堆内存是否已经被释放掉，是的话，则不允许double free，如此
 来避免对同一内存地址的double free，但实际上，一块内存一旦被释放，可能会立即被使用，因此is_freed标记大概率会被覆盖，因此还是会出现double 
 free，为此可以增加magic num，来标识一块内存是否已被其他人所申请使用，这样基本上可以避免绝大多数double free了，但还不是彻底根治：
 magic不对，说明已经被其他人使用覆写；magic对、但is_freed被覆写为0，还是可能会出现double free
 */
-CSPTR_INLINE void sfree_stack(void *ptr) { //起了个别名smart_free
+CSPTR_INLINE void smart_free(void *ptr) {
     union {
         void **real_ptr;
         void *ptr;
@@ -222,11 +224,13 @@ void *smove_size(void *ptr, size_t size) { //对于UNIQUE对象，重新申请�
     }
 
     void *newptr = smalloc(&args);
-    memcpy(newptr, ptr, GET_USER_DATA_ALIGNED_SIZE(meta));
+    if (!newptr) {
+        memcpy(newptr, ptr, GET_USER_DATA_ALIGNED_SIZE(meta));
+    }
     return newptr;
 }
 
-void *smove_v2(void *ptr) {
+void *smove_v2(void *ptr) { //在smove_size的基础上增加一点优化：立即释放内存拷贝前的旧UNIQUE对象
     union {
         void **real_ptr;
         void *ptr;
@@ -234,7 +238,31 @@ void *smove_v2(void *ptr) {
     if (!ptr) return;
     conv.ptr = ptr;
     void *newptr = smove(*conv.real_ptr);
-    sfree_stack(conv.ptr); //立即释放原始unique对象
+    if (!newptr) {
+        return NULL;
+    }
+    smart_free(conv.ptr); //立即释放原始unique对象
+    *conv.real_ptr = NULL;
+    return newptr;
+}
+
+/*鉴于UNIQUE对象只能有一个指针所指，完全可以不改变内存，仅改变指针变量，即将旧指针变量置为NULL，
+ptr2 = smove_v3(ptr1); //结果：ptr2=ptr1、ptr1=NULL*/
+void *smove_v3(void *ptr) {
+    union {
+        void **real_ptr;
+        void *ptr;
+    } conv;
+    if (!ptr) return NULL;
+    conv.ptr = ptr;
+    s_meta *meta = get_meta(ptr);
+    if (!meta) {
+        return NULL;
+    }
+    if (!IS_HEAP_UNIQUE(meta)) {
+        return NULL;
+    }
+    void *newptr = *conv.real_ptr;
     *conv.real_ptr = NULL;
     return newptr;
 }
@@ -307,4 +335,114 @@ CSPTR_PURE CSPTR_INLINE void store_user_data_ptr(s_meta *meta, void *ptr) {
 CSPTR_PURE CSPTR_INLINE void* retrieve_user_data_ptr(s_meta *meta) {
     if (!meta) return NULL;
     return (void*)meta+RETRIEVE_OFFSET_from_META(meta);
+}
+
+CSPTR_MALLOC_API
+CSPTR_INLINE void *realloc_entry(void *meta_ptr, size_t new_total_size) {
+    if (!meta_ptr || !new_total_size) return NULL;
+#ifdef SMALLOC_FIXED_ALLOCATOR
+    return realloc(meta_ptr, new_total_size);
+#else /* !SMALLOC_FIXED_ALLOCATOR */
+    return smalloc_allocator.realloc(meta_ptr, new_total_size);
+#endif /* !SMALLOC_FIXED_ALLOCATOR */
+}
+
+/*考虑到realloc后的内存地址很可能会发生变化，因此若对一个SHARED对象做realloc，ptr2 = smart_realloc(ptr1)函数返回之后，指向原始SHARED首地址的那些指针（ptr0、ptr1等，其中ptr0 = sref(ptr1)）
+就会变成野指针，这可以通过ptr2!=ptr1或者is_valid_heap_ptr(ptr1)判断出来，smart_realloc()中会将原始SHARED对象（ptr1所指）的is_freed字段置为true以表示废弃，
+程序员需要自行将这些引用指针（ptr0、ptr1）置空（可以传入二级指针：ptr2 = smart_realloc(&ptr1)，那么smart_realloc就可以自动将ptr1置空），smart_realloc()对于返回的新SHARED对象（ptr2所指）
+会自动将引用初始化为1，但假设realloc后的首地址不变，那么新的SHARED对象就还是继续保留旧的引用计数且+1，之前所有的引用指针就还是有效的；如果是对
+UNIQUE对象做realloc，那么问题就简单一些，由于只有一个指针可以指向UNIQUE对象，那么smart_realloc将旧UNIQUE对象的指针置空，程序员也就不需要找出其他所有引用依次置空了。综上确定传入smart_realloc
+的是一个二级指针
+示例1：
+ptr1 = shared_ptr(int[2], 666); //user_data_size is 8B
+ptr2 = smart_realloc(&ptr1, 4); //new_user_data_size <= old_user_data_size, do nothing, don't need realloc, but add ref count from 1 to 2, ptr1 == ptr2, ptr1 and ptr2 all be valid / 如果是UNIQUE对象，则将旧指针置空，再返回原指针变量的值
+示例2：
+ptr1 = shared_ptr(int[2], 666); //user_data_size is 8B
+ptr2 = smart_realloc(&ptr1, 256); //can't realloc (256-8) bytes after origin address, i.e., ptr2 != ptr1, the origin heap memory's meta that ptr1 points to will be set with FREED flag, 
+                                  //and ptr1 will be set to NULL, the returned new heap memory meta's ref count will be reset to 1, only ptr2 is effective / 如果是UNIQUE对象，则将旧指针置空，再返回新分配内存的地址
+示例3：
+ptr1 = shared_ptr(int[2], 666); //user_data_size is 8B
+ptr2 = smart_realloc(&ptr1, 16); //the memory of realloc is the original address, ptr2 == ptr1, and add ref count from 1 to 2, ptr1 and ptr2 all be valid / 如果是UNIQUE对象，则将旧指针置空，再返回原始内存首址
+*/
+void *smart_realloc(void *ptr, size_t new_user_data_size) { //ptr为二级指针
+    union {
+        void **real_ptr;
+        void *ptr;
+    } conv;
+    void *newptr = NULL;
+    void *newmetaptr = NULL;
+    if (!ptr) return;
+    conv.ptr = ptr;
+    s_meta *meta = get_meta(*conv.real_ptr);
+    if (!meta) {
+        return NULL;
+    }
+    if (new_user_data_size <= GET_USER_DATA_ALIGNED_SIZE(meta)) { //no need to do realloc
+        if (IS_HEAP_SHARED(meta)) {
+            return sref(*conv.real_ptr);
+        } else {
+            newptr = *conv.real_ptr;
+            *conv.real_ptr = NULL;
+            return newptr;
+        }
+    }
+    size_t new_aligned_user_data_size = align(new_user_data_size);
+    size_t base_meta_size = get_total_aligned_meta_size(*conv.real_ptr)+sizeof(size_t);
+    SET_HEAP_FREED(meta);
+    newmetaptr = realloc_entry((void*)meta, base_meta_size+new_aligned_user_data_size);
+    if (!newmetaptr) { //realloc failed, do nothing
+        UNSET_HEAP_FREED(meta);
+        return NULL;
+    }
+    
+    if (newmetaptr != (void*)meta) {
+        meta = NULL;
+        s_meta *new_meta = (s_meta*)newmetaptr;
+        UNSET_HEAP_FREED(new_meta);
+        memset(newmetaptr+base_meta_size+GET_USER_DATA_ALIGNED_SIZE(new_meta), 0, 
+            new_aligned_user_data_size-GET_USER_DATA_ALIGNED_SIZE(new_meta));
+        new_meta->user_data_size = new_aligned_user_data_size;
+        new_meta->user_data_elem_num = new_user_data_size / new_meta->user_data_one_elem_size;
+        store_user_data_ptr(new_meta, newmetaptr+base_meta_size);
+        newptr = retrieve_user_data_ptr(new_meta);
+        if (IS_HEAP_SHARED(new_meta)) {
+#ifndef NDEBUG
+            printf("[smartptr.realloc] realloc from %p to %p success, total with meta is %uB, the ref count is reset to 1, ptr for smart_realloc(&ptr) has been reset to NULL, \n"
+                "warning: all old ptrs that point to the old shared obj(%p) need to be reset as NULL to avoid `Dangling Pointer`, new obj: \n", 
+                *conv.real_ptr, newptr, base_meta_size+new_aligned_user_data_size, *conv.real_ptr);
+#endif
+            ((s_meta_shared*)new_meta)->ref_count = 1; //如果realloc后，内存地址变化，则先前的那些引用全部作废，且ref_count清空为1，最安全的做法是需要将旧引用全部找出来置NULL，以避免野指针
+        } else {
+#ifndef NDEBUG
+            printf("[smartptr.realloc] realloc from %p to %p success, total with meta is %uB, ptr for smart_realloc(&ptr) has been reset to NULL, new obj: \n", 
+                *conv.real_ptr, newptr, base_meta_size+new_aligned_user_data_size);
+#endif
+        }
+        print_smart_ptr_layout(newptr);
+        *conv.real_ptr = NULL;
+        return newptr;
+    } else { //原址realloc
+        UNSET_HEAP_FREED(meta);
+        memset(((void*)meta)+base_meta_size+GET_USER_DATA_ALIGNED_SIZE(meta), 0, 
+            new_aligned_user_data_size-GET_USER_DATA_ALIGNED_SIZE(meta));
+        meta->user_data_size = new_aligned_user_data_size;
+        meta->user_data_elem_num = new_user_data_size / meta->user_data_one_elem_size;
+        newptr = *conv.real_ptr;
+        if (IS_HEAP_SHARED(meta)) {
+#ifndef NDEBUG
+            printf("[smartptr.realloc] realloc at origin memory address %p success, total with meta is %uB, the ref count increases by 1, new obj: \n", 
+                newptr, base_meta_size+new_aligned_user_data_size);
+#endif
+            atomic_increment(&GET_REF_COUNT_OF_SHARED_META(meta)); //如果realloc后，内存地址不变，则先前的那些引用仍然有效，且ref_count+1
+        } else {
+#ifndef NDEBUG
+            printf("[smartptr.realloc] realloc at origin memory address %p success, total with meta is %uB, ptr for smart_realloc(&ptr) has been reset to NULL, new obj: \n", 
+                newptr, base_meta_size+new_aligned_user_data_size);
+#endif
+            *conv.real_ptr = NULL; //对于UNIQUE对象，原始指针置空，重新返回地址赋给另一个指针变量作为唯一指向
+        }
+        print_smart_ptr_layout(newptr);
+        return newptr;
+    }
+    return NULL;
 }
