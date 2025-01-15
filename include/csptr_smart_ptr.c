@@ -2,8 +2,6 @@
 
 #ifndef NDEBUG
 //start print_stacktrace
-#include <stdio.h>
-#include <stdlib.h>
 #include <execinfo.h>
 #include <unistd.h>
 
@@ -33,7 +31,7 @@ s_allocator smalloc_allocator = {malloc, free, realloc};
 volatile size_t csptr_smart_ptr_malloc_count = 0; //通过unique_ptr/shared_ptr/unique_arr/shared_arr接口申请的堆内存统计
 volatile size_t csptr_smart_ptr_free_count = 0;   //通过smart_free接口释放的堆内存统计
 
-__attribute__((destructor(0))) 
+__attribute__((destructor(101))) 
 void csptr_smart_malloc_free_count_judge(void) { //main主函数结束后确认申请的堆内存是否全部被释放，用于检查是否有内存泄漏
     if (csptr_smart_ptr_malloc_count != csptr_smart_ptr_free_count) {
         printf("[smartptr.error] malloc memory count %u != free count %u!!! please check code!\n", 
@@ -66,6 +64,15 @@ smart_free(&another_int); //*(&another_int)将返回0x0000ae3df617，于是再�
 来避免对同一内存地址的double free，但实际上，一块内存一旦被释放，可能会立即被使用，因此is_freed标记大概率会被覆盖，因此还是会出现double 
 free，为此可以增加magic num，来标识一块内存是否已被其他人所申请使用，这样基本上可以避免绝大多数double free了，但还不是彻底根治：
 magic不对，说明已经被其他人使用覆写；magic对、但is_freed被覆写为0，还是可能会出现double free
+由于meta的获取是根据传入的用户数据指针ptr做指针偏移(前移)：-size，其中size=(*((size_t*)ptr-1))，如果这里的size被覆写了，就会导致访问到
+不允许访问的内存地址导致crash（譬如size很大，前移跑到了0地址附近，显然会crash），这种可能性非常高，因此我尝试在get_meta()中增加了一个
+判断以尽量避免非法内存访问：
+if ((*size < sizeof(s_meta)) || (*size > 0xffffff)) {return;}
+更好的内存结构设计是：[magic num1 | 元数据(长度不定) | magic num2 | meta size | 用户数据] --- 通过magic num2来确认meta size的可靠性
+                                                                        ^ ptr
+而我们当前的结构是：[magic num | 元数据(长度不定) | meta size | 用户数据] --- 无法确认meta size是否可靠、未被覆写
+                                                        ^ ptr
+由于之前我们是用了一个size_t（8字节）存储meta size，而meta size顶多3字节即可存储，因此我们可以拿出其中5字节用于存储magic num2
 */
 CSPTR_INLINE void smart_free(void *ptr) {
     union {
@@ -88,8 +95,19 @@ CSPTR_PURE CSPTR_INLINE size_t align(size_t s) {
 
 CSPTR_PURE CSPTR_INLINE bool is_valid_heap_ptr(void *ptr) { //判断是否是合法堆
     if (!ptr) return false;
-    size_t *size = (size_t *) ptr - 1;
-    s_meta *meta = (s_meta *) ((char *) size - *size);
+    size_t *size_cell = (size_t *) ptr - 1;
+#ifdef METASIZE_WITH_MAGIC
+    size_t size = ((meta_size_unit *)size_cell)->meta_size;
+    if (((meta_size_unit *)size_cell)->magic != MAGIC_NUM) {
+        return false;
+    }
+#else
+    size_t size = *size_cell;
+#endif
+    if ((size < sizeof(s_meta)) || (size > 0xffffff)) {
+        return false;
+    }
+    s_meta *meta = (s_meta *) ((char *) size_cell - size);
     if (IS_HEAP_VALID(meta) && !IS_HEAP_FREED(meta) && (/*meta->ptr*/retrieve_user_data_ptr(meta) == ptr)) {
         return true;
     }
@@ -100,11 +118,28 @@ CSPTR_PURE CSPTR_INLINE bool is_valid_heap_ptr(void *ptr) { //判断是否是合
 如果是非法堆，则返回NULL*/
 CSPTR_PURE CSPTR_INLINE s_meta *get_meta(void *ptr) {
     if (!ptr) return NULL;
-    size_t *size = (size_t *) ptr - 1;
+    size_t *size_cell = (size_t *) ptr - 1;
+#ifdef METASIZE_WITH_MAGIC
+    size_t size = ((meta_size_unit *)size_cell)->meta_size;
+    if (((meta_size_unit *)size_cell)->magic != MAGIC_NUM) {
+#ifndef NDEBUG
+        printf("[smartptr.error] get meta from %p failed for <invalid_meta_size:magic error>, please check code\n", ptr);
+#endif
+        return NULL; //这意味着meta_size已不可靠，内存已被释放或其他人写穿
+    }
+#else
+    size_t size = *size_cell;
+#endif
     bool valid = true;
     bool freed = false;
     bool badptr = false;
-    s_meta *meta = (s_meta *) ((char *) size - *size);
+    if ((size < sizeof(s_meta)) || (size > 0xffffff)) { //user_data_offset占三字节，因此size不会超过2**24-1
+#ifndef NDEBUG
+        printf("[smartptr.error] get meta from %p failed for <invalid_meta_size:%u>, please check code\n", ptr, size);
+#endif
+        return NULL; //detect invalid heap
+    }
+    s_meta *meta = (s_meta *) ((char *) size_cell - size);
     if ((!(valid=IS_HEAP_VALID(meta))) || (freed=IS_HEAP_FREED(meta)) || (badptr=(/*meta->ptr*/retrieve_user_data_ptr(meta) != ptr))) {
 #ifndef NDEBUG
         printf("[smartptr.error] get meta from %p failed for <invalid_meta:%d,freed_heap:%d,bad_userdata_ptr:%d>, please check code\n", 
@@ -121,7 +156,11 @@ CSPTR_PURE CSPTR_INLINE size_t get_total_aligned_meta_size(void *ptr) { //获取
     if (!meta) {
         return 0;
     }
+#ifdef METASIZE_WITH_MAGIC
+    return ((meta_size_unit *)((size_t *) ptr - 1))->meta_size;
+#else
     return *(size_t *)((size_t *)ptr - 1);
+#endif
 }
 
 CSPTR_PURE CSPTR_INLINE size_t get_head_meta_size(void *ptr) { //获取第一个元数据大小（sizeof(s_meta) or sizeof(s_meta_shared)），非法堆返回0
@@ -225,8 +264,9 @@ void *smove_size(void *ptr, size_t size) { //对于UNIQUE对象，重新申请�
 
     void *newptr = smalloc(&args);
     if (!newptr) {
-        memcpy(newptr, ptr, GET_USER_DATA_ALIGNED_SIZE(meta));
+        return NULL;
     }
+    memcpy(newptr, ptr, GET_USER_DATA_ALIGNED_SIZE(meta));
     return newptr;
 }
 
@@ -315,7 +355,7 @@ void print_smart_ptr_layout(void *ptr) {
             printf(" | %p·元数据填充(%uB)", meta+head_meta_size, user_meta_size);
         }
     }
-    printf(" | %p·元数据大小(%u/%uB)", ((size_t *)ptr - 1), get_total_aligned_meta_size(ptr), sizeof(size_t));
+    printf(" | %p·元数据大小(%u/%uB)", ((size_t *)ptr - 1), get_total_aligned_meta_size(ptr), sizeof(meta_size_unit));
     if (IS_HEAP_ARRAY_TYPE(meta)) {
         printf(" | %p·用户数据(%ux%u/%uB)", ptr, GET_USER_DATA_ELEM_NUM(meta), GET_USER_DATA_ELEM_SIZE(meta), user_data_truth_size);
     } else {
@@ -324,7 +364,7 @@ void print_smart_ptr_layout(void *ptr) {
     if (user_data_padding > 0) {
         printf(" | %p·用户数据对齐填充(%uB)", ptr+user_data_truth_size, user_data_padding);
     }
-    printf("] => total %uB\n", head_meta_size+user_meta_size+sizeof(size_t)+user_data_truth_size+user_data_padding);
+    printf("] => total %uB\n", head_meta_size+user_meta_size+sizeof(meta_size_unit)+user_data_truth_size+user_data_padding);
 }
 
 CSPTR_PURE CSPTR_INLINE void store_user_data_ptr(s_meta *meta, void *ptr) {
@@ -387,7 +427,7 @@ void *smart_realloc(void *ptr, size_t new_user_data_size) { //ptr为二级指针
         }
     }
     size_t new_aligned_user_data_size = align(new_user_data_size);
-    size_t base_meta_size = get_total_aligned_meta_size(*conv.real_ptr)+sizeof(size_t);
+    size_t base_meta_size = get_total_aligned_meta_size(*conv.real_ptr)+sizeof(meta_size_unit);
     SET_HEAP_FREED(meta);
     newmetaptr = realloc_entry((void*)meta, base_meta_size+new_aligned_user_data_size);
     if (!newmetaptr) { //realloc failed, do nothing
@@ -408,13 +448,13 @@ void *smart_realloc(void *ptr, size_t new_user_data_size) { //ptr为二级指针
         if (IS_HEAP_SHARED(new_meta)) {
 #ifndef NDEBUG
             printf("[smartptr.realloc] realloc from %p to %p success, total with meta is %uB, the ref count is reset to 1, ptr for smart_realloc(&ptr) has been reset to NULL, \n"
-                "warning: all old ptrs that point to the old shared obj(%p) need to be reset as NULL to avoid `Dangling Pointer`, new obj: \n", 
+                "warning: all old ptrs that point to the old shared obj(%p) need to be reset as NULL to avoid `Dangling Pointer`, new shared obj: \n", 
                 *conv.real_ptr, newptr, base_meta_size+new_aligned_user_data_size, *conv.real_ptr);
 #endif
             ((s_meta_shared*)new_meta)->ref_count = 1; //如果realloc后，内存地址变化，则先前的那些引用全部作废，且ref_count清空为1，最安全的做法是需要将旧引用全部找出来置NULL，以避免野指针
         } else {
 #ifndef NDEBUG
-            printf("[smartptr.realloc] realloc from %p to %p success, total with meta is %uB, ptr for smart_realloc(&ptr) has been reset to NULL, new obj: \n", 
+            printf("[smartptr.realloc] realloc from %p to %p success, total with meta is %uB, ptr for smart_realloc(&ptr) has been reset to NULL, new unique obj: \n", 
                 *conv.real_ptr, newptr, base_meta_size+new_aligned_user_data_size);
 #endif
         }
@@ -430,13 +470,13 @@ void *smart_realloc(void *ptr, size_t new_user_data_size) { //ptr为二级指针
         newptr = *conv.real_ptr;
         if (IS_HEAP_SHARED(meta)) {
 #ifndef NDEBUG
-            printf("[smartptr.realloc] realloc at origin memory address %p success, total with meta is %uB, the ref count increases by 1, new obj: \n", 
+            printf("[smartptr.realloc] realloc at origin memory address %p success, total with meta is %uB, the ref count increases by 1, new shared obj: \n", 
                 newptr, base_meta_size+new_aligned_user_data_size);
 #endif
             atomic_increment(&GET_REF_COUNT_OF_SHARED_META(meta)); //如果realloc后，内存地址不变，则先前的那些引用仍然有效，且ref_count+1
         } else {
 #ifndef NDEBUG
-            printf("[smartptr.realloc] realloc at origin memory address %p success, total with meta is %uB, ptr for smart_realloc(&ptr) has been reset to NULL, new obj: \n", 
+            printf("[smartptr.realloc] realloc at origin memory address %p success, total with meta is %uB, ptr for smart_realloc(&ptr) has been reset to NULL, new unique obj: \n", 
                 newptr, base_meta_size+new_aligned_user_data_size);
 #endif
             *conv.real_ptr = NULL; //对于UNIQUE对象，原始指针置空，重新返回地址赋给另一个指针变量作为唯一指向

@@ -9,14 +9,16 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <stdio.h>
 
 # define CSPTR_PACKAGE "csptr"
-# define CSPTR_VERSION "3.1"
+# define CSPTR_VERSION "3.2"
 
 /* #undef SMALLOC_FIXED_ALLOCATOR */
 /* #undef CSPTR_NO_SENTINEL */
 #define CSPTR_SMART_PTR_MALLOC_FREE_COUNT_DBG
 //#define NDEBUG
+#define METASIZE_WITH_MAGIC
 
 # ifdef __GNUC__
 #  define CSPTR_INLINE      __attribute__ ((always_inline)) inline
@@ -70,6 +72,15 @@ typedef enum pointer_kind_ {
 #   define ISFREED  (1 << 5)
 #   define USERMETA (1 << 6)
 #   define ARRAY  (1 << 7)
+#endif
+
+#ifdef METASIZE_WITH_MAGIC
+typedef struct {
+    size_t magic:32;
+    size_t meta_size:32;
+} meta_size_unit;
+#else
+typedef size_t meta_size_unit;
 #endif
 
 typedef void (*f_destructor)(void *, void *);
@@ -351,7 +362,7 @@ static CSPTR_INLINE size_t atomic_decrement(volatile size_t *count) {
 CSPTR_MALLOC_API
 CSPTR_INLINE static void *alloc_entry(size_t head, size_t size, size_t metasize) {
     if (!head || !size) return NULL;
-    const size_t totalsize = head + size + metasize + sizeof(size_t);
+    const size_t totalsize = head + size + metasize + sizeof(meta_size_unit);
 #ifdef SMALLOC_FIXED_ALLOCATOR
     return malloc(totalsize);
 #else /* !SMALLOC_FIXED_ALLOCATOR */
@@ -413,7 +424,7 @@ static void *smalloc_impl(s_smalloc_args *args) {
     s_meta_shared *ptr = alloc_entry(head_size, size, aligned_metasize); //分配全部内存（UNIQUE/SHARED内存元数据+用户自定义元数据+size_t(记录两个元数据总长)+动态内存对象本体，其中用户自定义元数据是可选的）
     if (ptr == NULL)
         return NULL;
-    total_size = head_size + size + aligned_metasize + sizeof(size_t);
+    total_size = head_size + size + aligned_metasize + sizeof(meta_size_unit);
     memset(ptr, 0, total_size); //malloc不会清零初始化，这里手动做下清空
 
     char *shifted = (char *) ptr + head_size;
@@ -421,7 +432,12 @@ static void *smalloc_impl(s_smalloc_args *args) {
         memcpy(shifted, args->meta.data, args->meta.size);
 
     size_t *sz = (size_t *) (shifted + aligned_metasize);
+#ifdef METASIZE_WITH_MAGIC
+    ((meta_size_unit *)sz)->magic = MAGIC_NUM;
+    ((meta_size_unit *)sz)->meta_size = head_size + aligned_metasize;
+#else
     *sz = head_size + aligned_metasize; //两个元数据对齐后的总长
+#endif
 
     *(s_meta *) ptr = (s_meta) {
             .kind = args->kind | (args->meta.size && args->meta.data ? USERMETA : 0),
